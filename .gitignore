@@ -1,0 +1,4 @@
+dist/
+app/build/
+*.tmp
+.DS_Store

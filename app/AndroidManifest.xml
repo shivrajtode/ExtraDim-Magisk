@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Made with ❤️ by t.me/Shivraj_editx -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.extradim.tile"
+    android:versionCode="2"
+    android:versionName="1.1">
+
+    <uses-sdk
+        android:minSdkVersion="24"
+        android:targetSdkVersion="29" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_extradim"
+        android:label="Extra dim">
+
+        <service
+            android:name=".DimTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_extradim"
+            android:label="Extra dim"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="true"
+            android:label="Extra dim"
+            android:theme="@android:style/Theme.DeviceDefault">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

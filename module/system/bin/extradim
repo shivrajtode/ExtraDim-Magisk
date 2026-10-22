@@ -1,0 +1,268 @@
+#!/system/bin/sh
+# Extra Dim (Reduce Bright Colors) for Android 8 - 17+
+# Made with ❤️ by t.me/Shivraj_editx
+#
+# Two engines, picked automatically on every call:
+#   native  Android 12+ ROMs whose framework reports "Reduce bright colors" as available
+#           (dumpsys color_display): drives the real Extra Dim settings, so the system composes
+#           it with Night Light etc. and handles restarts itself.
+#   sf      everything else (Android 8-11, and Android 12+ ROMs where it is missing or reported
+#           "Not available"): pushes the same colour matrix AOSP's DisplayTransformManager sends
+#           to SurfaceFlinger (binder transaction 1015).
+# Nothing is patched in /system and nothing runs in the background. A restart returns the screen
+# to normal unless "persist" (keep on after restart) is switched on.
+#
+#USAGE-START
+#   extradim on [0-100]   turn on (optionally set intensity; higher = dimmer)
+#   extradim off
+#   extradim toggle
+#   extradim level N      set intensity, re-applies live if on
+#   extradim persist 0|1  keep on after restart (default: off after restart)
+#   extradim status       state, engine, Android API
+#   extradim test         dim for 3 seconds then restore (safe feasibility check)
+#   extradim check        is the dim offloaded to the display controller? (battery check)
+#
+# Optional tuning: /data/adb/extradim/config   (KEY=VALUE lines)
+#   ENGINE=auto|sf                force the SurfaceFlinger engine (default auto)
+#   CURVE=nonlinear|linear|auto   sf engine only; default nonlinear (gamma-safe)
+#   MINF=100                      sf engine only; darkest per-channel factor, in thousandths
+#USAGE-END
+
+DATA=${EXTRADIM_DATA:-/data/adb/extradim}
+STATE=$DATA/state
+CONF=$DATA/config
+
+die() { echo "extradim: $*" >&2; exit 1; }
+
+[ "$(id -u)" = "0" ] || die "needs root  (su -c 'extradim help')"
+mkdir -p "$DATA" 2>/dev/null && chmod 700 "$DATA" 2>/dev/null
+
+API=$(getprop ro.build.version.sdk 2>/dev/null)
+case "$API" in ''|*[!0-9]*) API=0 ;; esac
+
+ON=0
+LEVEL=40
+PERSIST=0
+BOOT=
+CURVE=nonlinear
+MINF=100
+ENGINE=auto
+
+load_file() {
+  [ -f "$1" ] || return 0
+  while IFS='=' read -r k v; do
+    case "$k" in
+      ON|LEVEL|PERSIST|MINF|BOOT)
+        case "$v" in ''|*[!0-9]*) ;; *) eval "$k=$v" ;; esac ;;
+      CURVE)
+        case "$v" in auto|linear|nonlinear) CURVE=$v ;; esac ;;
+      ENGINE)
+        case "$v" in auto|sf) ENGINE=$v ;; esac ;;
+    esac
+  done < "$1"
+}
+load_file "$CONF"
+load_file "$STATE"
+
+# Android 12+ only. The framework's real Extra Dim prints "Reduce bright colors:" followed by
+# " Activated: ..." when it is available and " Not available" when the ROM/HWC did not enable it.
+# When it is NOT available its colour transform is not set up, so writing its settings keys could
+# black out the screen: they are only ever written when this says available.
+native_available() {
+  [ "$API" -ge 31 ] || return 1
+  dumpsys color_display 2>/dev/null | sed -n '/^Reduce bright colors:/,/^Color mode:/p' | grep -q 'Activated:'
+}
+ENG=sf
+case "$1" in
+  help|-h|--help|'') ;;
+  *) if [ "$ENGINE" != "sf" ] && native_available; then ENG=native; fi ;;
+esac
+
+# Settings.Global boot_count changes on every restart. A dim turned on in an earlier boot is
+# already gone, so unless "persist" is on, stale state reads as off.
+bootno() {
+  v=$(settings get global boot_count 2>/dev/null)
+  case "$v" in ''|*[!0-9]*) echo "" ;; *) echo "$v" ;; esac
+}
+NOW=$(bootno)
+STALE=0
+if [ "$ON" = "1" ] && [ "$PERSIST" != "1" ] && [ -n "$NOW" ] && [ -n "$BOOT" ] && [ "$BOOT" != "$NOW" ]; then
+  ON=0
+  STALE=1
+fi
+
+save() {
+  printf 'ON=%s\nLEVEL=%s\nPERSIST=%s\nBOOT=%s\n' "$ON" "$LEVEL" "$PERSIST" "$NOW" > "$STATE.tmp" \
+    && mv "$STATE.tmp" "$STATE"
+}
+
+# What the tile app reads (no root needed on its side).
+mirror() {
+  settings put secure extradim_on "$ON" >/dev/null 2>&1
+  settings put secure extradim_level "$LEVEL" >/dev/null 2>&1
+  settings put secure extradim_persist "$PERSIST" >/dev/null 2>&1
+  [ -n "$NOW" ] && settings put secure extradim_boot "$NOW" >/dev/null 2>&1
+  # Android 8-11: tile app v1.0 reads AOSP's key names and no framework code reacts to them.
+  # Android 12+: those names belong to the real Extra Dim and are never written from here
+  # except by the native engine (native_set), and only when the framework says it is available.
+  if [ "$API" -gt 0 ] && [ "$API" -le 30 ]; then
+    settings put secure reduce_bright_colors_activated "$ON" >/dev/null 2>&1
+    settings put secure reduce_bright_colors_level "$LEVEL" >/dev/null 2>&1
+  fi
+}
+
+# AOSP rule (DisplayTransformManager.needsLinearColorMatrix): matrices are applied in linear
+# space unless the display is in the unmanaged "saturated" mode (persist.sys.sf.native_mode=1).
+pick_curve() {
+  case "$CURVE" in
+    linear|nonlinear) echo "$CURVE" ;;
+    *) if [ "$(getprop persist.sys.sf.native_mode)" = "1" ]; then echo nonlinear; else echo linear; fi ;;
+  esac
+}
+
+# strength 0..100 -> per-channel factor in thousandths. Coefficients are the AOSP
+# config_reduceBrightColorsCoefficients (linear) / ...Nonlinear sets: a*s^2 + b*s + c, s=strength/100.
+factor() {
+  s=$1
+  if [ "$2" = "nonlinear" ]; then
+    f=$(( (-443 * s * s) / 10000 + (-243 * s) / 100 + 981 ))
+  else
+    f=$(( 1000 - (956 * s) / 100 ))
+  fi
+  [ "$f" -lt "$MINF" ] && f=$MINF
+  [ "$f" -gt 1000 ] && f=1000
+  echo "$f"
+}
+
+fmt() { printf '%d.%03d' $(( $1 / 1000 )) $(( $1 % 1000 )); }
+
+sf_matrix() {
+  out=$(service call SurfaceFlinger 1015 i32 1 \
+    f "$1" f 0 f 0 f 0 \
+    f 0 f "$1" f 0 f 0 \
+    f 0 f 0 f "$1" f 0 \
+    f 0 f 0 f 0 f 1 2>&1)
+  case "$out" in
+    *rror*|*enied*|*"not exist"*|*"not found"*)
+      echo "extradim: SurfaceFlinger call failed: $out" >&2
+      return 1 ;;
+  esac
+  return 0
+}
+
+sf_reset() { service call SurfaceFlinger 1015 i32 0 >/dev/null 2>&1; }
+
+# native engine: flip the real Extra Dim settings (level first, then the switch)
+native_set() {
+  settings put secure reduce_bright_colors_level "$2" >/dev/null 2>&1
+  settings put secure reduce_bright_colors_activated "$1" >/dev/null 2>&1
+  return 0
+}
+
+# make the screen match the saved state
+apply() {
+  if [ "$ENG" = "native" ]; then
+    native_set "$ON" "$LEVEL"
+  elif [ "$ON" = "1" ]; then
+    f=$(factor "$LEVEL" "$(pick_curve)")
+    sf_matrix "$(fmt "$f")"
+  else
+    sf_reset
+  fi
+}
+
+# dim at a given level without touching the saved state (for test/check)
+dim_test_on() {
+  if [ "$ENG" = "native" ]; then
+    native_set 1 "$1"
+  else
+    f=$(factor "$1" "$(pick_curve)")
+    sf_matrix "$(fmt "$f")"
+  fi
+}
+
+num() {
+  case "$1" in ''|*[!0-9]*) die "not a number: '$1'" ;; esac
+  [ "$1" -le 100 ] || die "range is 0-100"
+}
+
+report() { if [ "$ON" = "1" ]; then echo "on $LEVEL"; else echo "off $LEVEL"; fi; }
+
+turn_on() {
+  ON=1
+  if ! apply; then ON=0; save; mirror; exit 1; fi
+}
+
+# Counts how many on-screen layers SurfaceFlinger hands to the display controller (DEVICE)
+# vs. composes on the GPU (CLIENT), straight from `dumpsys SurfaceFlinger`.
+comp_counts() {
+  d=$(dumpsys SurfaceFlinger 2>/dev/null)
+  dev=$(printf '%s\n' "$d" | grep -cE '\| +DEVICE +\|')
+  cli=$(printf '%s\n' "$d" | grep -cE '\| +CLIENT +\|')
+  echo "$dev $cli"
+}
+
+case "$1" in
+  on)
+    if [ -n "$2" ]; then num "$2"; LEVEL=$2; fi
+    turn_on; save; mirror; report ;;
+  off)
+    ON=0; apply; save; mirror; report ;;
+  toggle)
+    if [ "$ON" = "1" ]; then ON=0; apply; else turn_on; fi
+    save; mirror; report ;;
+  level)
+    num "$2"; LEVEL=$2
+    if [ "$ON" = "1" ]; then apply || { ON=0; }; elif [ "$ENG" = "native" ]; then native_set 0 "$LEVEL"; fi
+    save; mirror; report ;;
+  persist)
+    case "$2" in 0|1) PERSIST=$2 ;; *) die "persist takes 0 or 1" ;; esac
+    if [ "$ENG" = "native" ]; then
+      settings put secure reduce_bright_colors_persist_across_reboots "$PERSIST" >/dev/null 2>&1
+    fi
+    save; mirror; report ;;
+  status)
+    if [ "$ENG" = "native" ]; then
+      extra=""
+    else
+      c=$(pick_curve); f=$(factor "$LEVEL" "$c")
+      extra=" curve=$c factor=$(fmt "$f") floor=$(fmt "$MINF")"
+    fi
+    echo "state=$([ "$ON" = "1" ] && echo on || echo off) level=$LEVEL persist=$PERSIST stale=$STALE engine=$ENG api=$API$extra" ;;
+  test)
+    echo "dimming for 3s (engine $ENG, level 60) ..."
+    dim_test_on 60 || exit 1
+    sleep 3
+    apply
+    echo "restored" ;;
+  check)
+    set -- $(comp_counts); d0=$1; c0=$2
+    dim_test_on 60 || exit 1
+    sleep 1
+    set -- $(comp_counts); d1=$1; c1=$2
+    apply
+    echo "engine $ENG | layers DEVICE/CLIENT  before: $d0/$c0   with dim: $d1/$c1"
+    if [ $((d0 + c0)) -eq 0 ]; then
+      echo "can't tell (no layer table found in dumpsys SurfaceFlinger)"
+    elif [ "$c1" -gt "$c0" ] && [ "$d1" -lt "$d0" ]; then
+      echo "WARNING: dimming pushes layers to GPU composition (extra power; DRM video may blank). Leave it off on this panel."
+    else
+      echo "OK: layers stay on the display controller (HWC offload) - no extra GPU work."
+    fi ;;
+  boot)
+    if [ "$PERSIST" = "1" ] && [ "$ON" = "1" ]; then
+      # native engine: the system restores it itself (persist flag); sf engine: re-apply
+      [ "$ENG" = "native" ] || apply
+    else
+      ON=0; save
+      [ "$ENG" = "native" ] && native_set 0 "$LEVEL"
+    fi
+    mirror ;;
+  reapply)
+    [ "$ON" = "1" ] && [ "$ENG" != "native" ] && apply ;;
+  reset)
+    ON=0; apply; save; mirror; report ;;
+  *)
+    sed -n '/^#USAGE-START/,/^#USAGE-END/p' "$0" | sed '1d;$d;s/^# \{0,1\}//' ;;
+esac
+exit 0

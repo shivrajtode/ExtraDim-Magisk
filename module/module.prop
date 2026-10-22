@@ -1,0 +1,7 @@
+id=extradim
+name=Extra Dim (Android 8-17+)
+version=v3.0
+versionCode=6
+author=Shivraj_editx
+description=Extra Dim for ROMs that lack it, Android 8 to 17+: root helper + bundled Quick Settings tile. Made with ❤️ by t.me/Shivraj_editx
+updateJson=https://raw.githubusercontent.com/shivrajtode/ExtraDim-Magisk/main/update.json
