@@ -136,15 +136,36 @@ fi
 ORIGIN=${ORIGIN_URL:-https://github.com/$OWNER/$REPO.git}
 if git remote get-url origin >/dev/null 2>&1; then git remote set-url origin "$ORIGIN"; else git remote add origin "$ORIGIN"; fi
 
+GITAUTH=()
+if [ "$MODE" = token ] && [ "$TOKEN_FROM" = env ]; then
+  GITAUTH=(-c "http.extraHeader=Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')")
+fi
+g() { git ${GITAUTH[@]+"${GITAUTH[@]}"} "$@"; }
+
+# Several devices can publish the same repo: continue from the history that is already on GitHub
+# (so the push is a plain fast-forward) instead of starting a new one on every device.
+if [ "$exists" = 1 ] && [ "${FORCE:-0}" != 1 ]; then
+  if g fetch -q origin "$BRANCH" 2>/dev/null; then
+    if git merge-base --is-ancestor FETCH_HEAD HEAD 2>/dev/null; then
+      :
+    else
+      say "Continuing from the history already on GitHub"
+      git reset -q --soft FETCH_HEAD
+      if git diff --cached --quiet; then
+        say "GitHub already has exactly this content"
+      else
+        git commit -q -m "Extra Dim $VERSION" && ok "committed on top of the existing history"
+      fi
+    fi
+  else
+    warn "could not read $BRANCH from GitHub (empty repo?) - pushing as is"
+  fi
+fi
+
 say "Pushing $BRANCH"
 PUSH=(push -u origin "$BRANCH")
 [ "${FORCE:-0}" = 1 ] && PUSH=(push --force -u origin "$BRANCH")
-if [ "$MODE" = token ] && [ "$TOKEN_FROM" = env ]; then
-  hdr="Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
-  git -c "http.extraHeader=$hdr" "${PUSH[@]}" || die "push failed (if the repo already holds other files, re-run with FORCE=1)"
-else
-  git "${PUSH[@]}" || die "push failed (gh users: gh auth setup-git; if the repo already holds other files, re-run with FORCE=1)"
-fi
+g "${PUSH[@]}" || die "push failed (gh users: gh auth setup-git; if the repo already holds unrelated files, re-run with FORCE=1)"
 ok "pushed"
 
 # ---------------------------------------------------------------- description + topics
