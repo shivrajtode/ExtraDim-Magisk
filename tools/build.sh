@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/ExtraDim-Magisk-<version>.zip from module/  (+ update.json when OWNER/REPO are known)
+# Builds dist/ExtraDim-<version>.zip from module/  (+ update.json when OWNER/REPO are known)
 #
 #   bash tools/build.sh          zip only (uses the tile APK already in module/)
 #   bash tools/build.sh --app    rebuild the tile app from app/ first (Termux; needs the build
@@ -26,7 +26,7 @@ fi
 VER=$(sed -n 's/^version=//p' module/module.prop | head -n 1)
 VC=$(sed -n 's/^versionCode=//p' module/module.prop | head -n 1)
 [ -n "$VER" ] && [ -n "$VC" ] || { echo "module/module.prop needs version and versionCode" >&2; exit 1; }
-OUT="dist/ExtraDim-Magisk-$VER.zip"
+OUT="dist/ExtraDim-$VER.zip"
 
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT

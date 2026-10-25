@@ -38,15 +38,27 @@ Two engines, picked automatically on every call:
 
 **State and restarts.** The helper keeps `/data/adb/extradim/state` and mirrors `extradim_on / _level / _persist / _boot` to the secure settings so the tile can read them without root. `Settings.Global boot_count` changes on every restart: a dim from an earlier boot reads as off immediately, unless *Keep on after restart* is set. Android 8–11 additionally mirror AOSP's key names for tile app v1.0.
 
-**Tile app.** A `TileService` plus a settings activity (`QS_TILE_PREFERENCES`). It only calls `su -c extradim …` on a tap or slider release. It ships as a systemless system app (module overlay, no `pm install`), and the boot script adds the tile to Quick Settings once with `cmd statusbar add-tile`.
+**Tile app.** A `TileService` plus a settings activity (`QS_TILE_PREFERENCES`). On a tap or slider release it sends one command to the helper (see section 4). It ships as a systemless system app (module overlay, no `pm install`), and the boot script adds the tile to Quick Settings once with `cmd statusbar add-tile`.
 
 **Battery check.** `extradim check` counts layers that SurfaceFlinger hands to the display controller (`DEVICE`) versus composes on the GPU (`CLIENT`) in `dumpsys SurfaceFlinger`, before and with the dim. It is a heuristic, not a guarantee.
 
-## 4. Not done (yet)
+## 4. Root access without a grant
+
+The tile app needs root to run the helper, but KernelSU and APatch have no command a module can use to grant root to an app, and they hide system apps in their root list (the tile app is a system app). So the module avoids needing a grant:
+
+1. `service.sh` starts one idle `inotifyd` on the app's private, device-protected folder (`/data/user_de/0/com.extradim.tile/files`) and drops a `.listener` marker there.
+2. The app writes a one-line command (`toggle`, `on 40`, `level 70`, `persist 1` ...) into `files/cmd`. Only that app can write there.
+3. `cmd-handler.sh` (root) validates the line against a whitelist of words and digits, runs the helper, and deletes `cmd`. The app waits for the file to disappear (4 s at most), then reads the new state from the secure settings.
+4. If the listener isn't running (no `inotifyd`, or opted out with `touch /data/adb/extradim/no-listener`), the app falls back to `su -c`.
+
+On **Magisk** the boot script additionally inserts a root grant for the app into Magisk's policy table (`magisk --sqlite`, policy `2` = allow, no toast), but only when the app has no entry yet, so a choice made in Magisk is never overridden.
+
+## 5. Not done (yet)
 
 - Composing with Night Light on the SurfaceFlinger engine (needs a `system_server` patch).
 - Re-tuning auto-brightness for the dim.
 - A config-overlay route for Android 12+ (flipping `config_setColorTransformAccelerated`). It is ROM-specific and only valid if the HWC really can offload the transform.
+- Confirming the no-grant path on real KernelSU and APatch devices.
 
 ## References
 
@@ -56,4 +68,6 @@ Two engines, picked automatically on every call:
 - SurfaceFlinger transaction 1015 in the Night Display commit: <https://android.googlesource.com/platform/frameworks/base/+/297e118%5E%21/>
 - SystemUI Quick Settings tile guide: <https://android.googlesource.com/platform/frameworks/base/+/49eed100b49e/packages/SystemUI/docs/qs-tiles.md>
 - Another module using the same SurfaceFlinger call on Android 11–14: <https://github.com/adivenxnataly/DisplayCalibration>
+- KernelSU request for granting root from the shell (still no official command): <https://github.com/tiann/KernelSU/issues/1695>
+- Magisk tools (`magisk --sqlite`): <https://magisk.readthedocs.io/en/latest/developers/tools.html>
 - Red Moon issue showing `service call SurfaceFlinger 1015` usage (and that a zero matrix blanks the screen): <https://github.com/LibreShift/red-moon/issues/150>

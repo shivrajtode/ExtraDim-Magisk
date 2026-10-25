@@ -27,14 +27,20 @@ set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm_recursive "$APKDIR" 0 0 0755 0644 u:object_r:system_file:s0
 set_perm "$MODPATH/system/bin/extradim" 0 2000 0755 u:object_r:system_file:s0
 set_perm "$MODPATH/service.sh" 0 0 0755
+set_perm "$MODPATH/cmd-handler.sh" 0 0 0755
 set_perm "$MODPATH/uninstall.sh" 0 0 0755
 
-# Tile app v1.0 only knows AOSP's key names: fine on Android 8-11, but on Android 12+ ROMs without
-# the native feature it can show the wrong state until the app is rebuilt once (see README).
+# Tile app v1.2+ talks to the module's idle listener (no root grant needed, any manager). Older builds
+# only know "su": fine on Magisk (granted automatically), but not on KernelSU/APatch.
 APPV=$(cat "$MODPATH/app_version" 2>/dev/null)
-if [ "$API" -ge 31 ] && [ "${APPV:-1}" -lt 2 ] 2>/dev/null; then
-  ui_print "! Bundled tile app is v1.0: on Android 12+ run once in Termux:  bash tools/build.sh --app"
-  ui_print "  (repo: README -> 'Android 12+'), then re-flash the zip it creates in dist/"
+if [ "${APPV:-1}" -ge 3 ] 2>/dev/null; then
+  ui_print "- Root for the tile app is automatic: Magisk gets a grant, and an idle listener"
+  ui_print "  serves Magisk, KernelSU and APatch alike (nothing to unhide or grant by hand)"
+else
+  ui_print "- Magisk: the tile app is granted root automatically"
+  ui_print "! The bundled tile app is an older build (v1.0/1.1). KernelSU/APatch and Android 12+ ROMs"
+  ui_print "  need v1.2. Rebuild it once in Termux:  bash tools/build.sh --app"
+  ui_print "  (then flash the zip it puts in dist/)"
 fi
 
 # A copy you installed by hand keeps working (same package + signature); mention it once.
@@ -46,6 +52,6 @@ if [ "$BOOTMODE" = "true" ] && command -v pm >/dev/null 2>&1; then
   esac
 fi
 
-ui_print "- Nothing in framework/SystemUI is patched, nothing runs in the background"
+ui_print "- Nothing in framework/SystemUI is patched; one idle listener, no polling"
 ui_print "- Reboot, then the 'Extra dim' tile is added to Quick Settings (first boot only)"
 ui_print "- Quick test after reboot:  su -c 'extradim test'"

@@ -74,7 +74,7 @@ public class DimTileService extends TileService {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final String out = Root.run("toggle");
+                final String out = Root.run(getApplicationContext(), "toggle");
                 ui.post(new Runnable() {
                     @Override
                     public void run() {

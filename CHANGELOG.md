@@ -2,6 +2,15 @@
 
 All notable changes to this project. Made with ❤️ by t.me/Shivraj_editx
 
+## [v3.1] - 2026-10-24
+### Added
+- **Root is automatic.** Magisk: the boot script grants the tile app root once (never overriding your choice). **KernelSU / APatch / Magisk:** an idle `inotifyd` listener lets the tile app send commands without any root grant, so nothing has to be unhidden under *show system apps*.
+- Tile app **v1.2**: sends commands through that listener, falling back to `su` when it isn't running.
+- Release zip is now named `ExtraDim-<version>.zip`.
+
+### Notes
+- The one idle listener replaces the old "nothing in the background" claim. It does no polling. Opt out with `touch /data/adb/extradim/no-listener`.
+
 ## [v3.0] - 2026-10-22
 ### Added
 - **Android 8 → 17+**: the module installs on API 26 and newer (previously Android 10/11 only).

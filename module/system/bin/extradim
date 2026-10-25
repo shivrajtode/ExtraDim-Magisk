@@ -9,8 +9,8 @@
 #   sf      everything else (Android 8-11, and Android 12+ ROMs where it is missing or reported
 #           "Not available"): pushes the same colour matrix AOSP's DisplayTransformManager sends
 #           to SurfaceFlinger (binder transaction 1015).
-# Nothing is patched in /system and nothing runs in the background. A restart returns the screen
-# to normal unless "persist" (keep on after restart) is switched on.
+# Nothing is patched in /system; this helper only runs when called (tile, shell, boot script). A restart
+# returns the screen to normal unless "persist" (keep on after restart) is switched on.
 #
 #USAGE-START
 #   extradim on [0-100]   turn on (optionally set intensity; higher = dimmer)

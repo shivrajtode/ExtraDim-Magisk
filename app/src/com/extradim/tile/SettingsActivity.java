@@ -106,7 +106,7 @@ public class SettingsActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                Root.run(args);
+                Root.run(getApplicationContext(), args);
             }
         }).start();
     }
