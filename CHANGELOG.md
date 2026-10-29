@@ -2,6 +2,12 @@
 
 All notable changes to this project. Made with ❤️ by t.me/Shivraj_editx
 
+## [v3.2] - 2026-10-28
+### Added
+- **Sturdier no-root path.** The boot script now searches toybox and every manager's busybox for `inotifyd`, and falls back to a blocking named-pipe listener when there is none (tile app **v1.3** pokes it). `/data/adb/extradim/boot.log` records what happened.
+- `extradim diag [probe]`: one report to paste when something doesn't work. `extradim engine sf|auto`: switch engines.
+- **Native engine check (Android 12+).** If the framework accepts the settings but does not activate Extra Dim, the helper switches to the SurfaceFlinger engine by itself.
+
 ## [v3.1] - 2026-10-24
 ### Added
 - **Root is automatic.** Magisk: the boot script grants the tile app root once (never overriding your choice). **KernelSU / APatch / Magisk:** an idle `inotifyd` listener lets the tile app send commands without any root grant, so nothing has to be unhidden under *show system apps*.

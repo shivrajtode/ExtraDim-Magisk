@@ -34,6 +34,8 @@ Two engines, picked automatically on every call:
 | **sf** | Android 8–11; Android 12+ when Extra Dim is *not available*; or `ENGINE=sf` | `service call SurfaceFlinger 1015 i32 1 <16 floats>`: a uniform RGB scale (`diag(f,f,f,1)`, column-major; SurfaceFlinger requires the last row to be `0,0,0,1`). Reset with `1015 i32 0`. |
 | **native** | Android 12+ and `dumpsys color_display` reports it available | Writes `reduce_bright_colors_level`, then `reduce_bright_colors_activated` (plus the persist key). The system does the rest and composes it with Night Light. |
 
+**Native engine check.** After writing the Extra Dim settings, the helper reads `dumpsys color_display` again. If the framework still reports Extra Dim as not activated, it undoes the write, stores `ENGINE=sf` in the config and applies the SurfaceFlinger matrix instead (`extradim engine auto` reverts). If the screen still doesn't dim, `extradim diag probe` shows the raw SurfaceFlinger reply and the transform line in its dump.
+
 **Safety rule.** On Android 12+ the helper never writes AOSP's `reduce_bright_colors_*` keys unless the framework reports the feature as available. In the AOSP source the service registers observers for those keys regardless, but only loads its colour-transform coefficients when the feature is available, so writing them on an unavailable ROM could produce a wrong matrix. The SurfaceFlinger engine also keeps a floor (`MINF`) so a bad curve can't black the screen out. (A zero matrix does exactly that.)
 
 **State and restarts.** The helper keeps `/data/adb/extradim/state` and mirrors `extradim_on / _level / _persist / _boot` to the secure settings so the tile can read them without root. `Settings.Global boot_count` changes on every restart: a dim from an earlier boot reads as off immediately, unless *Keep on after restart* is set. Android 8–11 additionally mirror AOSP's key names for tile app v1.0.
@@ -46,10 +48,10 @@ Two engines, picked automatically on every call:
 
 The tile app needs root to run the helper, but KernelSU and APatch have no command a module can use to grant root to an app, and they hide system apps in their root list (the tile app is a system app). So the module avoids needing a grant:
 
-1. `service.sh` starts one idle `inotifyd` on the app's private, device-protected folder (`/data/user_de/0/com.extradim.tile/files`) and drops a `.listener` marker there.
-2. The app writes a one-line command (`toggle`, `on 40`, `level 70`, `persist 1` ...) into `files/cmd`. Only that app can write there.
+1. `service.sh` starts one idle listener on the app's private, device-protected folder (`/data/user_de/0/com.extradim.tile/files`) and writes a `.listener` marker there that names its kind. It looks for `inotifyd` in toybox and in the Magisk/KernelSU/APatch busybox; on ROMs without it, a tiny shell loop blocks on a named pipe (`cmd.fifo`, opened read-write so it never sees EOF) instead. Neither polls.
+2. The app writes a one-line command (`toggle`, `on 40`, `level 70`, `persist 1` ...) into `files/cmd` (and, for the pipe variant, pokes `cmd.fifo` without blocking). Only that app can write there.
 3. `cmd-handler.sh` (root) validates the line against a whitelist of words and digits, runs the helper, and deletes `cmd`. The app waits for the file to disappear (4 s at most), then reads the new state from the secure settings.
-4. If the listener isn't running (no `inotifyd`, or opted out with `touch /data/adb/extradim/no-listener`), the app falls back to `su -c`.
+4. If the listener isn't running (neither mechanism works, or opted out with `touch /data/adb/extradim/no-listener`), the app falls back to `su -c`. `/data/adb/extradim/boot.log` records what the boot script did and `extradim diag` prints it.
 
 On **Magisk** the boot script additionally inserts a root grant for the app into Magisk's policy table (`magisk --sqlite`, policy `2` = allow, no toast), but only when the app has no entry yet, so a choice made in Magisk is never overridden.
 

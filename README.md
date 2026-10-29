@@ -54,9 +54,10 @@ and **no root grant to fiddle with**.
 su -c 'extradim test'     # dims for 3 s, then restores itself
 su -c 'extradim check'    # battery check: display controller or GPU?
 su -c 'extradim status'   # engine, state, Android API
+su -c 'extradim diag'     # full report to paste into an issue
 ```
 
-If `test` doesn't dim the screen, please [open an issue](https://github.com/shivrajtode/ExtraDim-Magisk/issues/new?template=bug_report.md) with those three outputs.
+If `test` doesn't dim the screen, please [open an issue](https://github.com/shivrajtode/ExtraDim-Magisk/issues/new?template=bug_report.md) with the output of `su -c 'extradim diag probe'`.
 
 ## 🎚️ Use
 
@@ -68,6 +69,8 @@ If `test` doesn't dim the screen, please [open an issue](https://github.com/shiv
 | `extradim persist 0\|1` | Keep on after restart (default **0**) |
 | `extradim status` | State, engine, API |
 | `extradim test` / `check` | 3-second test / battery check |
+| `extradim engine sf\|auto` | Force the SurfaceFlinger engine, or let it choose |
+| `extradim diag [probe]` | Diagnostic report (add `probe` for a 1-second raw SurfaceFlinger test) |
 
 Everything is also on the tile: **tap** = on/off, **long-press** = intensity slider + *Keep on after restart*.
 
@@ -111,10 +114,17 @@ Android's own Extra Dim ends in one call: a colour matrix pushed to SurfaceFling
 > - **SurfaceFlinger engine:** Night Light, colour inversion and colour correction share the same matrix slot. Changing one replaces the dim until you toggle Extra Dim off and on. (The native engine on Android 12+ composes them properly.)
 > - Auto-brightness is not re-tuned for the dim (native Android 12+ does that).
 > - If `extradim check` says **WARNING**, your panel pipeline dims on the GPU: extra power, and DRM video may go black. AOSP hides Extra Dim on such devices for the same reason.
-> - The no-grant path needs `inotifyd` (busybox or toybox, which all three managers provide); without it the tile falls back to `su`.
+> - The no-grant path needs `inotifyd` or `mkfifo` (toybox or the manager's busybox); if neither works the tile falls back to `su`.
+> - The SurfaceFlinger engine writes its matrix from outside the system, so a ROM feature that re-sends its own matrices (Display White Balance, Night Light) can replace it.
 > - Verified on Android 11 with Magisk only so far (see the table above).
 
 ## ❓ FAQ
+
+<details>
+<summary><b>It says on, but the screen doesn't dim</b></summary>
+
+Run `su -c 'extradim diag probe'` and look at the `engine` line. If the native engine is in use on an Android 12+ ROM, the helper already switches to the SurfaceFlinger engine when the framework doesn't activate Extra Dim. You can also force it: `su -c 'extradim engine sf'`, then tap the tile again. If it still doesn't dim, paste the `diag probe` output in an issue.
+</details>
 
 <details>
 <summary><b>Is this an overlay?</b></summary>
@@ -143,7 +153,7 @@ Nothing polls. The module leaves one idle `inotifyd` listener that only wakes wh
 <details>
 <summary><b>KernelSU / APatch?</b></summary>
 
-They have no command to grant root to an app from a module (this is a [long-standing request](https://github.com/tiann/KernelSU/issues/1695)), and they hide system apps from their root list. So the tile doesn't use `su`: the module starts an idle `inotifyd` listener as root, and the app drops a one-line command into its own private folder, which a validating handler runs. It is a plain systemless module, so it is expected to work, but only Magisk has been used so far, so please report what you see.
+They have no command to grant root to an app from a module (this is a [long-standing request](https://github.com/tiann/KernelSU/issues/1695)), and they hide system apps from their root list. So the tile doesn't use `su`: the module starts an idle root listener (`inotifyd`, or a blocking pipe reader on ROMs without it), and the app drops a one-line command into its own private folder, which a validating handler runs. `su -c 'extradim diag'` shows which listener is running; `/data/adb/extradim/boot.log` says why if none is. It is a plain systemless module, so it is expected to work, but only Magisk has been used so far, so please report what you see.
 </details>
 
 ## 🛠️ Build from source (Termux, no PC needed)

@@ -21,6 +21,8 @@
 #   extradim status       state, engine, Android API
 #   extradim test         dim for 3 seconds then restore (safe feasibility check)
 #   extradim check        is the dim offloaded to the display controller? (battery check)
+#   extradim engine sf|auto   pick the engine (auto = native Extra Dim when the ROM really has it)
+#   extradim diag [probe] print a diagnostic report - paste it when something doesn't work
 #
 # Optional tuning: /data/adb/extradim/config   (KEY=VALUE lines)
 #   ENGINE=auto|sf                force the SurfaceFlinger engine (default auto)
@@ -72,6 +74,18 @@ native_available() {
   [ "$API" -ge 31 ] || return 1
   dumpsys color_display 2>/dev/null | sed -n '/^Reduce bright colors:/,/^Color mode:/p' | grep -q 'Activated:'
 }
+# prints true / false / unknown: does the framework's Extra Dim say it is activated right now?
+native_activated() {
+  v=$(dumpsys color_display 2>/dev/null | sed -n '/^Reduce bright colors:/,/^Color mode:/p' \
+      | grep -m1 'Activated:' | sed 's/.*Activated:[[:space:]]*//' | tr -d '[:space:]')
+  case "$v" in true|false) echo "$v" ;; *) echo unknown ;; esac
+}
+
+set_engine_config() { # $1 = sf|auto  (keeps the other lines of the config)
+  mkdir -p "$DATA" 2>/dev/null
+  { [ -f "$CONF" ] && grep -v '^ENGINE=' "$CONF"; echo "ENGINE=$1"; } > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+}
+
 ENG=sf
 case "$1" in
   help|-h|--help|'') ;;
@@ -163,6 +177,20 @@ native_set() {
 apply() {
   if [ "$ENG" = "native" ]; then
     native_set "$ON" "$LEVEL"
+    if [ "$ON" = "1" ]; then
+      a=$(native_activated)
+      if [ "$a" = "false" ]; then sleep 1; a=$(native_activated); fi
+      if [ "$a" = "false" ]; then
+        # the framework accepted the settings but did not activate Extra Dim: use SurfaceFlinger instead
+        echo "extradim: this ROM's Extra Dim did not activate - switching to the SurfaceFlinger engine (extradim engine auto to undo)" >&2
+        native_set 0 "$LEVEL"
+        set_engine_config sf
+        ENG=sf
+        f=$(factor "$LEVEL" "$(pick_curve)")
+        sf_matrix "$(fmt "$f")"
+        return $?
+      fi
+    fi
   elif [ "$ON" = "1" ]; then
     f=$(factor "$LEVEL" "$(pick_curve)")
     sf_matrix "$(fmt "$f")"
@@ -249,6 +277,55 @@ case "$1" in
     else
       echo "OK: layers stay on the display controller (HWC offload) - no extra GPU work."
     fi ;;
+  engine)
+    case "$2" in sf|auto) ;; *) die "engine takes sf or auto" ;; esac
+    # switch cleanly: turn the current effect off first so two engines never stack
+    if [ "$ON" = "1" ]; then ON=0; apply; save; mirror; echo "dim turned off - tap again to use the new engine"; fi
+    set_engine_config "$2"
+    echo "engine set to $2" ;;
+  diag)
+    PKG=com.extradim.tile
+    DE=/data/user_de/0/$PKG/files
+    echo "== Extra Dim diag =="
+    echo "module  : $(sed -n 's/^version=//p' /data/adb/modules/extradim/module.prop 2>/dev/null) / app_version $(cat /data/adb/modules/extradim/app_version 2>/dev/null)"
+    echo "android : $(getprop ro.build.version.release) (API $API, $(getprop ro.build.version.codename)) $(getprop ro.product.manufacturer) $(getprop ro.product.device)"
+    echo "rom     : $(getprop ro.build.display.id)   selinux: $(getenforce 2>/dev/null)"
+    rm=""
+    command -v magisk >/dev/null 2>&1 && rm="$rm magisk($(magisk -v 2>/dev/null | head -n 1))"
+    if command -v ksud >/dev/null 2>&1 || [ -e /data/adb/ksud ]; then rm="$rm kernelsu-family($( (ksud -V || /data/adb/ksud -V) 2>/dev/null | head -n 1))"; fi
+    [ -e /data/adb/apd ] && rm="$rm apatch"
+    echo "root    :${rm:- unknown}"
+    echo "engine  : $ENG  (config ENGINE=$ENGINE, native_available=$(native_available && echo yes || echo no), activated=$([ "$API" -ge 31 ] && native_activated || echo n/a))"
+    echo "state   : on=$ON level=$LEVEL persist=$PERSIST stale=$STALE"
+    echo "-- dumpsys color_display (head):"
+    dumpsys color_display 2>/dev/null | sed -n '/^Night display:/,/^Color mode:/p' | head -n 22 | sed 's/^/   /'
+    echo "-- SurfaceFlinger colour transform lines in its dump:"
+    sfl=$(dumpsys SurfaceFlinger 2>/dev/null | grep -i -m3 -E 'colorTransform|color transform' | sed 's/^ *//' | cut -c1-150)
+    if [ -n "$sfl" ]; then printf '%s\n' "$sfl" | sed 's/^/   /'; else echo "   (none found)"; fi
+    echo "-- settings:"
+    for k in extradim_on extradim_level extradim_persist extradim_boot reduce_bright_colors_activated reduce_bright_colors_level reduce_bright_colors_persist_across_reboots; do
+      echo "   $k=$(settings get secure $k 2>/dev/null)"
+    done
+    echo "   boot_count=$(settings get global boot_count 2>/dev/null)"
+    echo "-- tile app:"
+    echo "   path: $(pm path $PKG 2>/dev/null | head -n 1)   uid: $(stat -c %u /data/data/$PKG 2>/dev/null)"
+    dumpsys package $PKG 2>/dev/null | grep -m2 -E 'versionName|versionCode' | sed 's/^ */   /'
+    echo "-- listener (lets the app work without a root grant):"
+    echo "   dir    : $(ls -ldZ "$DE" 2>/dev/null || echo missing)"
+    echo "   marker : $(cat "$DE/.listener" 2>/dev/null || echo none)"
+    echo "   procs  : $( (ps -A 2>/dev/null || ps 2>/dev/null) | grep -E 'inotifyd|fifo-loop' | grep -v grep | head -n 3 | tr -s ' ' | tr '\n' ';')"
+    echo "   last cmd: $(cat "$DATA/last-command" 2>/dev/null)"
+    echo "   boot.log:"; tail -n 14 "$DATA/boot.log" 2>/dev/null | sed 's/^/     /'
+    if [ "$2" = "probe" ]; then
+      echo "-- probe: raw SurfaceFlinger call (about 1 s dim, then your saved state is restored)"
+      out=$(service call SurfaceFlinger 1015 i32 1 f 0.5 f 0 f 0 f 0 f 0 f 0.5 f 0 f 0 f 0 f 0 f 0.5 f 0 f 0 f 0 f 0 f 1 2>&1)
+      echo "   service call -> $out"
+      sleep 1
+      sfl=$(dumpsys SurfaceFlinger 2>/dev/null | grep -i -m2 -E 'colorTransform|color transform' | sed 's/^ *//' | cut -c1-150)
+      if [ -n "$sfl" ]; then printf '%s\n' "$sfl" | sed 's/^/   dump while dimmed: /'; else echo "   dump while dimmed: (no colour transform line)"; fi
+      apply
+    fi
+    echo "== end ==" ;;
   boot)
     if [ "$PERSIST" = "1" ] && [ "$ON" = "1" ]; then
       # native engine: the system restores it itself (persist flag); sf engine: re-apply

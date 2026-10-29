@@ -17,6 +17,7 @@ case "$line" in
     case "$a" in ''|*[!0-9]*) ;; *) ok=1 ;; esac ;;
   "persist 0"|"persist 1") ok=1 ;;
 esac
+echo "$(date +%H:%M:%S) '$line' accepted=$ok" > "${EXTRADIM_DATA:-/data/adb/extradim}/last-command" 2>/dev/null
 if [ "$ok" = 1 ]; then
   sh "$MODDIR/system/bin/extradim" $line >/dev/null 2>&1   # only known words and digits get here
 fi
