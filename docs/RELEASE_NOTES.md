@@ -1,11 +1,11 @@
-## Extra Dim v3.2: sturdier no-root path + diagnostics
+## Extra Dim v3.3: fix for ROMs whose display driver ignores colour transforms
 
 **What's new**
-- **The tile works without a root grant on more ROMs.** If the ROM has no `inotifyd` (or the manager's busybox lacks it), the module now falls back to a blocking named-pipe listener. Tile app **v1.3** talks to either. `/data/adb/extradim/boot.log` says what the boot script did.
-- **Android 12+:** if the ROM's own Extra Dim accepts the settings but doesn't activate, the helper switches to the SurfaceFlinger engine automatically.
-- `su -c 'extradim diag probe'` prints one report to paste when something doesn't dim. `su -c 'extradim engine sf'` forces the SurfaceFlinger engine.
+- **`extradim gpu on`**: on some ROMs SurfaceFlinger holds the dim but the panel doesn't change (Android's own Extra Dim, Night Light and reading mode fail too). This forces GPU composition while dimmed so the dim is applied in software. Try it first with `su -c 'extradim test gpu'`. It costs some battery while dimmed and is off by default.
+- `su -c 'extradim diag probe'` now also shows the GPU state, HWC capability lines and the backlight nodes.
+- Still: no root grant needed (idle listener), Android 8 → 17+, two engines picked automatically.
 
 **Install:** Magisk / KernelSU / APatch → Modules → Install from storage → reboot.
-Verified on Android 11 with Magisk. Other versions and managers are expected to work; reports welcome (paste `extradim diag probe`).
+Verified on Android 11 (Magisk). The no-grant path is confirmed on KernelSU-family ksud 4.2 / Android 16; reports welcome (paste `extradim diag probe`).
 
 Made with ❤️ by t.me/Shivraj_editx

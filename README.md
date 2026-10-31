@@ -70,6 +70,7 @@ If `test` doesn't dim the screen, please [open an issue](https://github.com/shiv
 | `extradim status` | State, engine, API |
 | `extradim test` / `check` | 3-second test / battery check |
 | `extradim engine sf\|auto` | Force the SurfaceFlinger engine, or let it choose |
+| `extradim gpu on\|off` | Force GPU composition while dimmed (for drivers that ignore colour transforms) |
 | `extradim diag [probe]` | Diagnostic report (add `probe` for a 1-second raw SurfaceFlinger test) |
 
 Everything is also on the tile: **tap** = on/off, **long-press** = intensity slider + *Keep on after restart*.
@@ -115,6 +116,7 @@ Android's own Extra Dim ends in one call: a colour matrix pushed to SurfaceFling
 > - Auto-brightness is not re-tuned for the dim (native Android 12+ does that).
 > - If `extradim check` says **WARNING**, your panel pipeline dims on the GPU: extra power, and DRM video may go black. AOSP hides Extra Dim on such devices for the same reason.
 > - The no-grant path needs `inotifyd` or `mkfifo` (toybox or the manager's busybox); if neither works the tile falls back to `su`.
+> - `extradim gpu on` costs battery: every frame is composed on the GPU while the dim is on (`extradim check` will say so).
 > - The SurfaceFlinger engine writes its matrix from outside the system, so a ROM feature that re-sends its own matrices (Display White Balance, Night Light) can replace it.
 > - Verified on Android 11 with Magisk only so far (see the table above).
 
@@ -123,7 +125,11 @@ Android's own Extra Dim ends in one call: a colour matrix pushed to SurfaceFling
 <details>
 <summary><b>It says on, but the screen doesn't dim</b></summary>
 
-Run `su -c 'extradim diag probe'` and look at the `engine` line. If the native engine is in use on an Android 12+ ROM, the helper already switches to the SurfaceFlinger engine when the framework doesn't activate Extra Dim. You can also force it: `su -c 'extradim engine sf'`, then tap the tile again. If it still doesn't dim, paste the `diag probe` output in an issue.
+Run `su -c 'extradim diag probe'`.
+
+- If the *SurfaceFlinger colour transform* lines show your dim (for example `0.742` on the diagonal) but the screen didn't change, the **display driver ignores colour transforms**. Android's own Extra Dim, Night Light and reading modes fail on such ROMs too. Workaround: `su -c 'extradim gpu on'`. It forces GPU composition while dimmed, so SurfaceFlinger applies the dim itself (the same switch as Developer options → *Disable HW overlays*). Try it first with `su -c 'extradim test gpu'`. The cost is more GPU work while dimmed.
+- If the native engine is in use on an Android 12+ ROM, the helper already switches to the SurfaceFlinger engine when the framework doesn't activate Extra Dim. You can force it: `su -c 'extradim engine sf'`.
+- Still nothing? Paste the `diag probe` output in an issue.
 </details>
 
 <details>

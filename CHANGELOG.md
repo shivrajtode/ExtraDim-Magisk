@@ -2,6 +2,11 @@
 
 All notable changes to this project. Made with ❤️ by t.me/Shivraj_editx
 
+## [v3.3] - 2026-10-29
+### Added
+- **GPU-composition assist** (`extradim gpu on|off`, `extradim test gpu`, `GPU=1` in the config) for ROMs whose display driver ignores colour transforms: SurfaceFlinger holds the matrix but nothing dims, and Android's own Extra Dim / Night Light fail too. It forces GPU composition only while dimmed and only undoes what it did itself.
+- `extradim diag` prints the GPU state, HWC colour-transform capability lines, the backlight nodes and a hint when the matrix is in SurfaceFlinger but the screen may not have changed.
+
 ## [v3.2] - 2026-10-28
 ### Added
 - **Sturdier no-root path.** The boot script now searches toybox and every manager's busybox for `inotifyd`, and falls back to a blocking named-pipe listener when there is none (tile app **v1.3** pokes it). `/data/adb/extradim/boot.log` records what happened.

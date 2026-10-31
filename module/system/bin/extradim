@@ -19,15 +19,18 @@
 #   extradim level N      set intensity, re-applies live if on
 #   extradim persist 0|1  keep on after restart (default: off after restart)
 #   extradim status       state, engine, Android API
-#   extradim test         dim for 3 seconds then restore (safe feasibility check)
+#   extradim test [gpu]   dim for 3 seconds then restore (add gpu to try it with GPU composition)
 #   extradim check        is the dim offloaded to the display controller? (battery check)
 #   extradim engine sf|auto   pick the engine (auto = native Extra Dim when the ROM really has it)
+#   extradim gpu on|off|status  force GPU composition while dimmed (fixes ROMs whose display driver
+#                         ignores colour transforms: the matrix shows in `diag` but nothing dims)
 #   extradim diag [probe] print a diagnostic report - paste it when something doesn't work
 #
 # Optional tuning: /data/adb/extradim/config   (KEY=VALUE lines)
 #   ENGINE=auto|sf                force the SurfaceFlinger engine (default auto)
 #   CURVE=nonlinear|linear|auto   sf engine only; default nonlinear (gamma-safe)
 #   MINF=100                      sf engine only; darkest per-channel factor, in thousandths
+#   GPU=0|1                       1 = force GPU composition while dimmed (same as `extradim gpu on`)
 #USAGE-END
 
 DATA=${EXTRADIM_DATA:-/data/adb/extradim}
@@ -49,12 +52,13 @@ BOOT=
 CURVE=nonlinear
 MINF=100
 ENGINE=auto
+GPU=0
 
 load_file() {
   [ -f "$1" ] || return 0
   while IFS='=' read -r k v; do
     case "$k" in
-      ON|LEVEL|PERSIST|MINF|BOOT)
+      ON|LEVEL|PERSIST|MINF|BOOT|GPU)
         case "$v" in ''|*[!0-9]*) ;; *) eval "$k=$v" ;; esac ;;
       CURVE)
         case "$v" in auto|linear|nonlinear) CURVE=$v ;; esac ;;
@@ -81,10 +85,25 @@ native_activated() {
   case "$v" in true|false) echo "$v" ;; *) echo unknown ;; esac
 }
 
-set_engine_config() { # $1 = sf|auto  (keeps the other lines of the config)
+set_config() { # KEY VALUE  (keeps the other lines of the config)
   mkdir -p "$DATA" 2>/dev/null
-  { [ -f "$CONF" ] && grep -v '^ENGINE=' "$CONF"; echo "ENGINE=$1"; } > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+  { [ -f "$CONF" ] && grep -v "^$1=" "$CONF"; echo "$1=$2"; } > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
 }
+set_engine_config() { set_config ENGINE "$1"; }
+
+# Some ROMs hand colour transforms to a display driver that silently ignores them: SurfaceFlinger holds
+# the matrix (see `extradim diag`) but nothing dims. Forcing GPU composition makes SurfaceFlinger apply
+# it itself. It is the same switch as Developer options -> "Disable HW overlays" (binder code 1008), and
+# we only ever undo it if we set it.
+gpu_force() { # 1 = force GPU composition, 0 = give it back (only if we forced it)
+  if [ "$1" = "1" ]; then
+    service call SurfaceFlinger 1008 i32 1 >/dev/null 2>&1 && touch "$DATA/gpu_forced"
+  elif [ -f "$DATA/gpu_forced" ]; then
+    service call SurfaceFlinger 1008 i32 0 >/dev/null 2>&1
+    rm -f "$DATA/gpu_forced"
+  fi
+}
+gpu_sync() { if [ "$GPU" = "1" ] && [ "$ON" = "1" ]; then gpu_force 1; else gpu_force 0; fi; }
 
 ENG=sf
 case "$1" in
@@ -175,6 +194,13 @@ native_set() {
 
 # make the screen match the saved state
 apply() {
+  apply_engine
+  rc=$?
+  gpu_sync
+  return $rc
+}
+
+apply_engine() {
   if [ "$ENG" = "native" ]; then
     native_set "$ON" "$LEVEL"
     if [ "$ON" = "1" ]; then
@@ -207,6 +233,9 @@ dim_test_on() {
     f=$(factor "$1" "$(pick_curve)")
     sf_matrix "$(fmt "$f")"
   fi
+  rc=$?
+  [ "$GPU" = "1" ] && gpu_force 1
+  return $rc
 }
 
 num() {
@@ -256,9 +285,10 @@ case "$1" in
       c=$(pick_curve); f=$(factor "$LEVEL" "$c")
       extra=" curve=$c factor=$(fmt "$f") floor=$(fmt "$MINF")"
     fi
-    echo "state=$([ "$ON" = "1" ] && echo on || echo off) level=$LEVEL persist=$PERSIST stale=$STALE engine=$ENG api=$API$extra" ;;
+    echo "state=$([ "$ON" = "1" ] && echo on || echo off) level=$LEVEL persist=$PERSIST stale=$STALE engine=$ENG gpu=$GPU api=$API$extra" ;;
   test)
-    echo "dimming for 3s (engine $ENG, level 60) ..."
+    [ "$2" = "gpu" ] && GPU=1
+    echo "dimming for 3s (engine $ENG, level 60$([ "$GPU" = 1 ] && echo ', GPU composition')) ..."
     dim_test_on 60 || exit 1
     sleep 3
     apply
@@ -277,6 +307,15 @@ case "$1" in
     else
       echo "OK: layers stay on the display controller (HWC offload) - no extra GPU work."
     fi ;;
+  gpu)
+    case "$2" in
+      on)  set_config GPU 1; GPU=1 ;;
+      off) set_config GPU 0; GPU=0 ;;
+      status|'') echo "gpu=$GPU forced_now=$([ -f "$DATA/gpu_forced" ] && echo yes || echo no)"; exit 0 ;;
+      *) die "gpu takes on, off or status" ;;
+    esac
+    gpu_sync
+    echo "GPU composition while dimmed: $([ "$GPU" = 1 ] && echo on || echo off)   (dim is $([ "$ON" = 1 ] && echo on || echo off))" ;;
   engine)
     case "$2" in sf|auto) ;; *) die "engine takes sf or auto" ;; esac
     # switch cleanly: turn the current effect off first so two engines never stack
@@ -296,12 +335,22 @@ case "$1" in
     [ -e /data/adb/apd ] && rm="$rm apatch"
     echo "root    :${rm:- unknown}"
     echo "engine  : $ENG  (config ENGINE=$ENGINE, native_available=$(native_available && echo yes || echo no), activated=$([ "$API" -ge 31 ] && native_activated || echo n/a))"
-    echo "state   : on=$ON level=$LEVEL persist=$PERSIST stale=$STALE"
+    echo "state   : on=$ON level=$LEVEL persist=$PERSIST stale=$STALE   gpu=$GPU forced_now=$([ -f "$DATA/gpu_forced" ] && echo yes || echo no)"
     echo "-- dumpsys color_display (head):"
     dumpsys color_display 2>/dev/null | sed -n '/^Night display:/,/^Color mode:/p' | head -n 22 | sed 's/^/   /'
     echo "-- SurfaceFlinger colour transform lines in its dump:"
     sfl=$(dumpsys SurfaceFlinger 2>/dev/null | grep -i -m3 -E 'colorTransform|color transform' | sed 's/^ *//' | cut -c1-150)
     if [ -n "$sfl" ]; then printf '%s\n' "$sfl" | sed 's/^/   /'; else echo "   (none found)"; fi
+    caps=$(dumpsys SurfaceFlinger 2>/dev/null | grep -i -m4 -E 'skip_client_color_transform|SkipClientColorTransform|color transform' | sed 's/^ *//' | cut -c1-120)
+    [ -n "$caps" ] && { echo "-- HWC colour-transform capability lines:"; printf '%s\n' "$caps" | sed 's/^/   /'; }
+    echo "-- backlight nodes:"
+    for b in /sys/class/leds/lcd-backlight /sys/class/backlight/*; do
+      [ -d "$b" ] && echo "   $b: $(cat "$b/brightness" 2>/dev/null)/$(cat "$b/max_brightness" 2>/dev/null)"
+    done
+    if [ "$ON" = "1" ] && [ -n "$sfl" ]; then
+      echo "-- hint: if the matrix above is not the identity but the screen did NOT dim, the display driver"
+      echo "   ignores colour transforms (Android's own Extra Dim / Night Light fail too). Try: extradim gpu on"
+    fi
     echo "-- settings:"
     for k in extradim_on extradim_level extradim_persist extradim_boot reduce_bright_colors_activated reduce_bright_colors_level reduce_bright_colors_persist_across_reboots; do
       echo "   $k=$(settings get secure $k 2>/dev/null)"

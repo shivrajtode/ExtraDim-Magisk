@@ -55,12 +55,19 @@ The tile app needs root to run the helper, but KernelSU and APatch have no comma
 
 On **Magisk** the boot script additionally inserts a root grant for the app into Magisk's policy table (`magisk --sqlite`, policy `2` = allow, no toast), but only when the app has no entry yet, so a choice made in Magisk is never overridden.
 
-## 5. Not done (yet)
+## 5. When the display driver ignores colour transforms
+
+SurfaceFlinger holds the matrix (it shows up as `colorTransformMatrix` in `dumpsys SurfaceFlinger`, which `extradim diag` prints), and normally the display HAL applies it to the overlay layers in hardware. On some ROMs (typically a new Android on an older vendor stack) the HAL accepts the call and does nothing, so the matrix is present but the panel doesn't change. Android's own Extra Dim, Night Light and reading modes fail the same way, which is how you recognise it.
+
+`extradim gpu on` works around it: while the dim is on, the helper forces GPU composition (binder code 1008, the switch behind Developer options → *Disable HW overlays*), so SurfaceFlinger applies the matrix while composing and the HAL's transform support isn't needed. The helper gives HWC composition back when the dim goes off, and only if it was the one that forced it. The price is GPU work on every frame while dimmed.
+
+## 6. Not done (yet)
 
 - Composing with Night Light on the SurfaceFlinger engine (needs a `system_server` patch).
 - Re-tuning auto-brightness for the dim.
 - A config-overlay route for Android 12+ (flipping `config_setColorTransformAccelerated`). It is ROM-specific and only valid if the HWC really can offload the transform.
-- Confirming the no-grant path on real KernelSU and APatch devices.
+- Confirming the no-grant path on more KernelSU and APatch devices (it has been seen working on KernelSU-family ksud 4.2 / Android 16).
+- A backlight-scaling engine for panels where neither the hardware transform nor GPU composition dims (`extradim diag` already lists the backlight nodes).
 
 ## References
 
