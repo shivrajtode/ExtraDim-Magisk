@@ -29,6 +29,7 @@ set_perm "$MODPATH/system/bin/extradim" 0 2000 0755 u:object_r:system_file:s0
 set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/cmd-handler.sh" 0 0 0755
 set_perm "$MODPATH/fifo-loop.sh" 0 0 0755
+set_perm "$MODPATH/bl-handler.sh" 0 0 0755
 set_perm "$MODPATH/uninstall.sh" 0 0 0755
 
 # Tile app v1.2+ talks to the module's idle listener (no root grant needed, any manager). Older builds

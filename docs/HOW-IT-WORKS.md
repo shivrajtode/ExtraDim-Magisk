@@ -59,7 +59,11 @@ On **Magisk** the boot script additionally inserts a root grant for the app into
 
 SurfaceFlinger holds the matrix (it shows up as `colorTransformMatrix` in `dumpsys SurfaceFlinger`, which `extradim diag` prints), and normally the display HAL applies it to the overlay layers in hardware. On some ROMs (typically a new Android on an older vendor stack) the HAL accepts the call and does nothing, so the matrix is present but the panel doesn't change. Android's own Extra Dim, Night Light and reading modes fail the same way, which is how you recognise it.
 
-`extradim gpu on` works around it: while the dim is on, the helper forces GPU composition (binder code 1008, the switch behind Developer options → *Disable HW overlays*), so SurfaceFlinger applies the matrix while composing and the HAL's transform support isn't needed. The helper gives HWC composition back when the dim goes off, and only if it was the one that forced it. The price is GPU work on every frame while dimmed.
+`extradim gpu on` is the first workaround: while the dim is on, the helper forces GPU composition (binder code 1008, the switch behind Developer options → *Disable HW overlays*), so SurfaceFlinger can apply the matrix while composing and the HAL's transform support isn't needed. The helper gives HWC composition back when the dim goes off, and only if it was the one that forced it. The price is GPU work on every frame while dimmed.
+
+It has a limit: a display HAL can declare that it handles colour transforms for everything, including GPU-composed output (HWC capability `SKIP_CLIENT_COLOR_TRANSFORM`), and SurfaceFlinger then never applies the matrix itself. [Qualcomm's display HAL declares this capability](https://android.googlesource.com/platform/hardware/qcom/display/+/c5fbee3%5E%21/), so on Qualcomm devices whose colour management doesn't work, GPU composition cannot help.
+
+**Backlight engine.** The second workaround doesn't use colours at all: `extradim engine backlight` scales the panel backlight (`/sys/class/leds/lcd-backlight/brightness` or `/sys/class/backlight/*`) by about the square of the per-channel factor (never below 4%). An `inotifyd` watcher on that node re-applies the scale whenever the system writes a new value (wake-up, slider, auto-brightness) and remembers the system's value so turning the dim off restores it. A restart clears all of it. It is opt-in: it needs a writable node, and a PWM panel may flicker at very low values.
 
 ## 6. Not done (yet)
 

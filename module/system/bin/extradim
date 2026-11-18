@@ -19,21 +19,23 @@
 #   extradim level N      set intensity, re-applies live if on
 #   extradim persist 0|1  keep on after restart (default: off after restart)
 #   extradim status       state, engine, Android API
-#   extradim test [gpu]   dim for 3 seconds then restore (add gpu to try it with GPU composition)
+#   extradim test [gpu|backlight]  dim for 3 seconds then restore (optionally via GPU composition or backlight)
 #   extradim check        is the dim offloaded to the display controller? (battery check)
-#   extradim engine sf|auto   pick the engine (auto = native Extra Dim when the ROM really has it)
+#   extradim engine sf|auto|backlight   pick the engine (auto = native Extra Dim when the ROM really has it;
+#                         backlight = scale the panel backlight, for ROMs that can't apply colour transforms)
 #   extradim gpu on|off|status  force GPU composition while dimmed (fixes ROMs whose display driver
 #                         ignores colour transforms: the matrix shows in `diag` but nothing dims)
 #   extradim diag [probe] print a diagnostic report - paste it when something doesn't work
 #
 # Optional tuning: /data/adb/extradim/config   (KEY=VALUE lines)
-#   ENGINE=auto|sf                force the SurfaceFlinger engine (default auto)
+#   ENGINE=auto|sf|backlight      force an engine (default auto)
 #   CURVE=nonlinear|linear|auto   sf engine only; default nonlinear (gamma-safe)
 #   MINF=100                      sf engine only; darkest per-channel factor, in thousandths
 #   GPU=0|1                       1 = force GPU composition while dimmed (same as `extradim gpu on`)
 #USAGE-END
 
 DATA=${EXTRADIM_DATA:-/data/adb/extradim}
+MODDIR=${EXTRADIM_MODDIR:-/data/adb/modules/extradim}
 STATE=$DATA/state
 CONF=$DATA/config
 
@@ -63,7 +65,7 @@ load_file() {
       CURVE)
         case "$v" in auto|linear|nonlinear) CURVE=$v ;; esac ;;
       ENGINE)
-        case "$v" in auto|sf) ENGINE=$v ;; esac ;;
+        case "$v" in auto|sf|backlight) ENGINE=$v ;; esac ;;
     esac
   done < "$1"
 }
@@ -91,6 +93,80 @@ set_config() { # KEY VALUE  (keeps the other lines of the config)
 }
 set_engine_config() { set_config ENGINE "$1"; }
 
+# ---------------------------------------------------------------- backlight engine (opt-in)
+# For panels where neither the hardware colour transform nor GPU composition dims (the display driver
+# ignores both). It scales the panel backlight instead, and an inotifyd watcher re-applies the scale
+# whenever the system writes a new brightness (wake-up, slider, auto-brightness).
+BLNODE=""
+BLDIRS=${EXTRADIM_BLDIRS:-"/sys/class/leds/lcd-backlight /sys/class/backlight/*"}
+bl_find() {
+  for d in $BLDIRS; do
+    if [ -f "$d/brightness" ] && [ -f "$d/max_brightness" ]; then BLNODE=$d; return 0; fi
+  done
+  return 1
+}
+bl_val() { cat "$BLNODE/brightness" 2>/dev/null; }
+# strength 0..100 -> luminance factor in thousandths (about the square of the per-channel factor, never below 4%)
+bl_lum() {
+  f=$(factor "$1" "$(pick_curve)")
+  L=$(( f * f / 1000 ))
+  [ "$L" -lt 40 ] && L=40
+  echo "$L"
+}
+bl_scale() { # $1 = system value, $2 = luminance factor
+  if [ "$1" -gt 0 ]; then s=$(( $1 * $2 / 1000 )); [ "$s" -lt 1 ] && s=1; echo "$s"; else echo 0; fi
+}
+# same inotifyd lookup as the boot script (toybox, or the root manager's busybox)
+find_inotifyd() {
+  for c in "inotifyd" "toybox inotifyd" "/system/bin/toybox inotifyd" "/data/adb/ksu/bin/busybox inotifyd" \
+           "/data/adb/ap/bin/busybox inotifyd" "/data/adb/magisk/busybox inotifyd" "busybox inotifyd"; do
+    bin=${c%% *}
+    if ! command -v "$bin" >/dev/null 2>&1 && [ ! -x "$bin" ]; then continue; fi
+    out=$($c 2>&1 </dev/null | head -n 3)
+    case "$out" in
+      ''|*"not found"*|*"Unknown command"*|*"unknown command"*|*"applet not"*) continue ;;
+    esac
+    echo "$c"; return 0
+  done
+  return 1
+}
+bl_stop() {
+  if [ -f "$DATA/bl_pid" ]; then kill "$(cat "$DATA/bl_pid")" 2>/dev/null; rm -f "$DATA/bl_pid"; fi
+}
+bl_on() { # $1 = strength
+  bl_find || return 1
+  L=$(bl_lum "$1")
+  cur=$(bl_val)
+  case "$cur" in ''|*[!0-9]*) echo "extradim: cannot read $BLNODE/brightness" >&2; return 1 ;; esac
+  last=$(cat "$DATA/bl_last" 2>/dev/null)
+  mine=$(cat "$DATA/bl_active" 2>/dev/null)
+  # remember what the system wants, unless the value we see is our own earlier write
+  if [ "$mine" != "${NOW:--}" ] || [ "$cur" != "$last" ] || [ ! -f "$DATA/bl_sys" ]; then echo "$cur" > "$DATA/bl_sys"; fi
+  echo "$L" > "$DATA/bl_factor"
+  s=$(bl_scale "$(cat "$DATA/bl_sys")" "$L")
+  echo "$s" > "$DATA/bl_last"
+  echo "${NOW:--}" > "$DATA/bl_active"
+  echo "$s" > "$BLNODE/brightness" 2>/dev/null || { echo "extradim: cannot write $BLNODE/brightness" >&2; return 1; }
+  # the watcher keeps the dim in place when the system writes the backlight again
+  if [ -f "$DATA/bl_pid" ] && kill -0 "$(cat "$DATA/bl_pid")" 2>/dev/null; then return 0; fi
+  INO=$(find_inotifyd)
+  if [ -n "$INO" ]; then
+    nohup $INO "$MODDIR/bl-handler.sh" "$BLNODE/brightness:w" >/dev/null 2>&1 &
+    echo $! > "$DATA/bl_pid"
+  else
+    echo "extradim: no inotifyd here - the dim holds until the system rewrites the backlight (wake-up, slider)" >&2
+  fi
+  return 0
+}
+bl_off() {
+  bl_stop
+  if bl_find && [ -f "$DATA/bl_sys" ] && [ "$(cat "$DATA/bl_active" 2>/dev/null)" = "${NOW:--}" ]; then
+    cat "$DATA/bl_sys" > "$BLNODE/brightness" 2>/dev/null
+  fi
+  rm -f "$DATA/bl_sys" "$DATA/bl_last" "$DATA/bl_factor" "$DATA/bl_active"
+  return 0
+}
+
 # Some ROMs hand colour transforms to a display driver that silently ignores them: SurfaceFlinger holds
 # the matrix (see `extradim diag`) but nothing dims. Forcing GPU composition makes SurfaceFlinger apply
 # it itself. It is the same switch as Developer options -> "Disable HW overlays" (binder code 1008), and
@@ -108,7 +184,12 @@ gpu_sync() { if [ "$GPU" = "1" ] && [ "$ON" = "1" ]; then gpu_force 1; else gpu_
 ENG=sf
 case "$1" in
   help|-h|--help|'') ;;
-  *) if [ "$ENGINE" != "sf" ] && native_available; then ENG=native; fi ;;
+  *)
+    if [ "$ENGINE" = "backlight" ]; then
+      if bl_find; then ENG=backlight; else echo "extradim: no backlight node found - using the SurfaceFlinger engine" >&2; fi
+    elif [ "$ENGINE" != "sf" ] && native_available; then
+      ENG=native
+    fi ;;
 esac
 
 # Settings.Global boot_count changes on every restart. A dim turned on in an earlier boot is
@@ -201,7 +282,10 @@ apply() {
 }
 
 apply_engine() {
-  if [ "$ENG" = "native" ]; then
+  if [ "$ENG" = "backlight" ]; then
+    if [ "$ON" = "1" ]; then bl_on "$LEVEL"; else bl_off; fi
+    return $?
+  elif [ "$ENG" = "native" ]; then
     native_set "$ON" "$LEVEL"
     if [ "$ON" = "1" ]; then
       a=$(native_activated)
@@ -227,7 +311,9 @@ apply_engine() {
 
 # dim at a given level without touching the saved state (for test/check)
 dim_test_on() {
-  if [ "$ENG" = "native" ]; then
+  if [ "$ENG" = "backlight" ]; then
+    bl_on "$1"
+  elif [ "$ENG" = "native" ]; then
     native_set 1 "$1"
   else
     f=$(factor "$1" "$(pick_curve)")
@@ -287,6 +373,16 @@ case "$1" in
     fi
     echo "state=$([ "$ON" = "1" ] && echo on || echo off) level=$LEVEL persist=$PERSIST stale=$STALE engine=$ENG gpu=$GPU api=$API$extra" ;;
   test)
+    if [ "$2" = "backlight" ]; then
+      bl_find || die "no backlight node found (looked in /sys/class/leds/lcd-backlight and /sys/class/backlight)"
+      v=$(bl_val); L=$(bl_lum 60); s=$(bl_scale "$v" "$L")
+      echo "backlight $BLNODE: $v -> $s for 3s ..."
+      echo "$s" > "$BLNODE/brightness" || die "cannot write the backlight node"
+      sleep 3
+      echo "$v" > "$BLNODE/brightness"
+      echo "restored"
+      exit 0
+    fi
     [ "$2" = "gpu" ] && GPU=1
     echo "dimming for 3s (engine $ENG, level 60$([ "$GPU" = 1 ] && echo ', GPU composition')) ..."
     dim_test_on 60 || exit 1
@@ -317,7 +413,7 @@ case "$1" in
     gpu_sync
     echo "GPU composition while dimmed: $([ "$GPU" = 1 ] && echo on || echo off)   (dim is $([ "$ON" = 1 ] && echo on || echo off))" ;;
   engine)
-    case "$2" in sf|auto) ;; *) die "engine takes sf or auto" ;; esac
+    case "$2" in sf|auto|backlight) ;; *) die "engine takes sf, auto or backlight" ;; esac
     # switch cleanly: turn the current effect off first so two engines never stack
     if [ "$ON" = "1" ]; then ON=0; apply; save; mirror; echo "dim turned off - tap again to use the new engine"; fi
     set_engine_config "$2"
@@ -326,7 +422,7 @@ case "$1" in
     PKG=com.extradim.tile
     DE=/data/user_de/0/$PKG/files
     echo "== Extra Dim diag =="
-    echo "module  : $(sed -n 's/^version=//p' /data/adb/modules/extradim/module.prop 2>/dev/null) / app_version $(cat /data/adb/modules/extradim/app_version 2>/dev/null)"
+    echo "module  : $(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null) / app_version $(cat "$MODDIR/app_version" 2>/dev/null)"
     echo "android : $(getprop ro.build.version.release) (API $API, $(getprop ro.build.version.codename)) $(getprop ro.product.manufacturer) $(getprop ro.product.device)"
     echo "rom     : $(getprop ro.build.display.id)   selinux: $(getenforce 2>/dev/null)"
     rm=""
@@ -344,12 +440,15 @@ case "$1" in
     caps=$(dumpsys SurfaceFlinger 2>/dev/null | grep -i -m4 -E 'skip_client_color_transform|SkipClientColorTransform|color transform' | sed 's/^ *//' | cut -c1-120)
     [ -n "$caps" ] && { echo "-- HWC colour-transform capability lines:"; printf '%s\n' "$caps" | sed 's/^/   /'; }
     echo "-- backlight nodes:"
-    for b in /sys/class/leds/lcd-backlight /sys/class/backlight/*; do
-      [ -d "$b" ] && echo "   $b: $(cat "$b/brightness" 2>/dev/null)/$(cat "$b/max_brightness" 2>/dev/null)"
+    for b in $BLDIRS; do
+      [ -d "$b" ] && echo "   $b: $(cat "$b/brightness" 2>/dev/null)/$(cat "$b/max_brightness" 2>/dev/null)  (writable: $([ -w "$b/brightness" ] && echo yes || echo no))"
     done
+    echo "   inotifyd: $(find_inotifyd || echo none)   bl watcher: $([ -f "$DATA/bl_pid" ] && kill -0 "$(cat "$DATA/bl_pid")" 2>/dev/null && echo running || echo stopped)"
     if [ "$ON" = "1" ] && [ -n "$sfl" ]; then
       echo "-- hint: if the matrix above is not the identity but the screen did NOT dim, the display driver"
-      echo "   ignores colour transforms (Android's own Extra Dim / Night Light fail too). Try: extradim gpu on"
+      echo "   ignores colour transforms (Android's own Extra Dim / Night Light fail too). Try: extradim test gpu"
+      echo "   (Qualcomm drivers tell SurfaceFlinger never to apply it itself, so GPU composition may not help either);"
+      echo "   then: extradim test backlight   and, if that dims:  extradim engine backlight"
     fi
     echo "-- settings:"
     for k in extradim_on extradim_level extradim_persist extradim_boot reduce_bright_colors_activated reduce_bright_colors_level reduce_bright_colors_persist_across_reboots; do
@@ -376,6 +475,7 @@ case "$1" in
     fi
     echo "== end ==" ;;
   boot)
+    rm -f "$DATA/bl_pid"
     if [ "$PERSIST" = "1" ] && [ "$ON" = "1" ]; then
       # native engine: the system restores it itself (persist flag); sf engine: re-apply
       [ "$ENG" = "native" ] || apply

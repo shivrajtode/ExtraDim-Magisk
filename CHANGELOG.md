@@ -2,6 +2,11 @@
 
 All notable changes to this project. Made with ❤️ by t.me/Shivraj_editx
 
+## [v3.4] - 2026-10-31
+### Added
+- **Backlight engine** (`extradim engine backlight`, `extradim test backlight`): for panels where neither the hardware colour transform nor GPU composition dims. Scales the panel backlight and keeps it scaled with an `inotifyd` watcher. Opt-in and experimental.
+- Docs now say plainly that GPU composition cannot help on drivers that declare `SKIP_CLIENT_COLOR_TRANSFORM` (Qualcomm's does).
+
 ## [v3.3] - 2026-10-29
 ### Added
 - **GPU-composition assist** (`extradim gpu on|off`, `extradim test gpu`, `GPU=1` in the config) for ROMs whose display driver ignores colour transforms: SurfaceFlinger holds the matrix but nothing dims, and Android's own Extra Dim / Night Light fail too. It forces GPU composition only while dimmed and only undoes what it did itself.
